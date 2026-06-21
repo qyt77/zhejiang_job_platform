@@ -22,8 +22,7 @@ st.set_page_config(
     page_icon="📊"
 )
 
-BASE_DIR = Path(__file__).parent
-DATA_PATH = BASE_DIR / "data" / "clean_jobs.csv"
+DATA_PATH = Path("data/clean_jobs.csv")
 STREAM_SIMULATION_FACTOR = 5  # 原始数据基础上额外生成 5 个批次，形成“流数据”效果
 
 
@@ -887,6 +886,29 @@ def add_custom_css():
             .live-status-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
 
+
+
+        /* ===== 侧边栏检索区优化 ===== */
+        section[data-testid="stSidebar"] label {
+            font-size: 15px !important;
+            font-weight: 850 !important;
+            color: #0f172a !important;
+        }
+
+        section[data-testid="stSidebar"] .stButton > button {
+            min-height: 44px !important;
+            border-radius: 14px !important;
+            font-size: 15px !important;
+            font-weight: 850 !important;
+            border: 1px solid rgba(148,163,184,0.32) !important;
+            box-shadow: 0 6px 16px rgba(15,23,42,0.05) !important;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+            color: #64748b !important;
+            font-size: 13px !important;
+            line-height: 1.65 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True
@@ -1250,16 +1272,23 @@ def main():
     show_stream_status(df)
 
     # =====================================================
-    # 侧边栏筛选
+    # 侧边栏：岗位检索与筛选
     # =====================================================
-    st.sidebar.title("筛选条件")
-
     salary_min = int(df["salary_avg"].min())
     salary_max = int(df["salary_avg"].max())
+    city_options = sorted(df["city"].dropna().unique().tolist())
+    direction_options = sorted(df["job_direction"].dropna().unique().tolist())
+    degree_options = sorted(df["degree_clean"].dropna().unique().tolist())
 
-    if st.sidebar.button("← 返回封面页", use_container_width=True, key="back_to_cover_btn"):
+    def reset_to_latest_market():
+        st.session_state["filter_keyword"] = ""
+        st.session_state["filter_cities"] = city_options
+        st.session_state["filter_directions"] = direction_options
+        st.session_state["filter_degrees"] = degree_options
+        st.session_state["filter_salary"] = (salary_min, salary_max)
+
+    def back_to_cover():
         st.session_state["entered_dashboard"] = False
-        # 清除 ?enter=1，否则 rerun 后还会自动进入分析页
         try:
             st.query_params.clear()
         except Exception:
@@ -1267,26 +1296,48 @@ def main():
                 st.experimental_set_query_params()
             except Exception:
                 pass
-        st.rerun()
 
-    if st.sidebar.button("📊 一键总览就业市场情况", use_container_width=True, key="overview_all_btn"):
-        st.session_state["filter_cities"] = []
-        st.session_state["filter_directions"] = []
-        st.session_state["filter_degrees"] = []
-        st.session_state["filter_salary"] = (salary_min, salary_max)
-        st.session_state["filter_keyword"] = ""
-        st.rerun()
+    st.sidebar.markdown(
+        """
+        <div style="margin-top: 4px; margin-bottom: 18px;">
+            <div style="font-size: 34px; font-weight: 950; line-height: 1.08; color: #0f172a; letter-spacing: -1px;">
+                岗位检索
+            </div>
+            <div style="font-size: 13px; color: #64748b; margin-top: 8px; line-height: 1.65;">
+                输入关键词后，可结合城市、方向、学历和薪资条件进行组合查询。
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    st.sidebar.caption("不选择筛选项时，系统默认展示全量就业市场数据；点击“一键总览”可快速恢复全局视角。")
+    keyword = st.sidebar.text_input(
+        "岗位关键词",
+        "",
+        key="filter_keyword",
+        placeholder="如：医生、Java、销售、数据分析"
+    )
+    st.sidebar.caption("支持岗位名、公司、城市、技能、岗位方向的多关键词加权检索")
 
-    if st.sidebar.button("🔄 刷新本地数据", use_container_width=True, key="refresh_local_data_btn"):
-        st.cache_data.clear()
-        st.rerun()
+    st.sidebar.markdown(
+        """
+        <div style="height: 1px; background: rgba(148,163,184,0.32); margin: 18px 0 16px 0;"></div>
+        <div style="
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(37,99,235,0.10);
+            color: #1d4ed8;
+            font-size: 14px;
+            font-weight: 900;
+            margin-bottom: 12px;
+        ">高级检索</div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    status_for_sidebar = get_stream_status(df)
-    st.sidebar.caption(f"数据状态：准实时模拟｜最新批次：{status_for_sidebar['latest_time']}")
-
-    city_options = sorted(df["city"].dropna().unique().tolist())
     selected_cities = st.sidebar.multiselect(
         "选择城市",
         city_options,
@@ -1294,7 +1345,6 @@ def main():
         key="filter_cities"
     )
 
-    direction_options = sorted(df["job_direction"].dropna().unique().tolist())
     selected_directions = st.sidebar.multiselect(
         "选择岗位方向",
         direction_options,
@@ -1302,7 +1352,6 @@ def main():
         key="filter_directions"
     )
 
-    degree_options = sorted(df["degree_clean"].dropna().unique().tolist())
     selected_degrees = st.sidebar.multiselect(
         "选择学历要求",
         degree_options,
@@ -1319,8 +1368,44 @@ def main():
         key="filter_salary"
     )
 
-    keyword = st.sidebar.text_input("岗位关键词搜索", "", key="filter_keyword")
-    st.sidebar.caption("支持岗位名、公司、城市、技能、岗位方向的多关键词加权检索")
+    st.sidebar.markdown(
+        """
+        <div style="height: 1px; background: rgba(148,163,184,0.32); margin: 18px 0 14px 0;"></div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if st.sidebar.button("🔎 一键查询", use_container_width=True, key="query_by_filters_btn"):
+        st.rerun()
+
+    st.sidebar.button(
+        "📊 最新就业总览",
+        use_container_width=True,
+        key="latest_market_btn",
+        on_click=reset_to_latest_market
+    )
+    st.sidebar.caption("恢复全省、全方向、全学历视角，查看最新整体就业市场。")
+
+    if st.sidebar.button("🔄 刷新本地数据", use_container_width=True, key="refresh_local_data_btn"):
+        st.cache_data.clear()
+        st.rerun()
+
+    status_for_sidebar = get_stream_status(df)
+    st.sidebar.caption(f"数据状态：准实时模拟｜最新批次：{status_for_sidebar['latest_time']}")
+
+    st.sidebar.markdown(
+        """
+        <div style="height: 1px; background: rgba(148,163,184,0.32); margin: 18px 0 14px 0;"></div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.sidebar.button(
+        "← 返回封面页",
+        use_container_width=True,
+        key="back_to_cover_btn",
+        on_click=back_to_cover
+    )
 
     # 左侧筛选默认不选中：不选表示“全部”，避免一打开页面就被默认条件限制。
     city_mask = df["city"].isin(selected_cities) if selected_cities else pd.Series(True, index=df.index)
@@ -1332,30 +1417,51 @@ def main():
         city_mask & direction_mask & degree_mask & salary_mask
     ].copy()
 
-    # 关键词检索逻辑：
-    # 1）先在当前筛选条件下搜索；
-    # 2）如果没有结果，再自动放宽“城市/方向/学历”限制，只保留薪资范围搜索；
-    # 这样输入“医生”时，不会因为左侧没有选中医疗类方向而直接空白。
+    # 关键词 / 筛选兜底逻辑：
+    # 1）先按左侧条件严格筛选；
+    # 2）如果严格筛选为空，不直接让右侧空白，而是自动放宽到“仅保留薪资范围”的全局数据；
+    # 3）如果输入关键词，先在严格筛选内搜索；搜不到再在全局薪资范围内搜索；仍搜不到则展示薪资范围内数据，并给出提示。
     search_relaxed = False
+    filter_relaxed = False
+    no_keyword_match = False
+
+    relaxed_pool = df[
+        (df["salary_avg"] >= selected_salary[0]) &
+        (df["salary_avg"] <= selected_salary[1])
+    ].copy()
+
     if keyword.strip():
         filtered_df = weighted_keyword_search(base_filtered_df, keyword)
 
         if filtered_df.empty:
-            relaxed_pool = df[
-                (df["salary_avg"] >= selected_salary[0]) &
-                (df["salary_avg"] <= selected_salary[1])
-            ].copy()
             filtered_df = weighted_keyword_search(relaxed_pool, keyword)
             search_relaxed = not filtered_df.empty
+
+        if filtered_df.empty:
+            # 兜底：关键词也搜不到时，不让页面变空，展示当前薪资范围下的整体市场作为参考
+            filtered_df = relaxed_pool.copy()
+            no_keyword_match = True
     else:
         filtered_df = base_filtered_df
 
+        if filtered_df.empty:
+            # 兜底：筛选组合太窄时，自动展示当前薪资范围下的全局市场
+            filtered_df = relaxed_pool.copy()
+            filter_relaxed = True
+
     if filtered_df.empty:
-        st.warning("当前关键词和筛选条件下没有岗位数据。可以换成近义词，例如：医生可试试 医师、临床、医学、护理、药师。")
-        st.stop()
+        # 极端兜底：如果薪资范围也没有数据，就回到全量数据，保证页面永远有内容展示
+        filtered_df = df.copy()
+        filter_relaxed = True
 
     if search_relaxed:
         st.info("当前关键词在左侧筛选条件内没有结果，系统已自动放宽城市/岗位方向/学历限制，仅保留薪资范围进行全库检索。")
+
+    if filter_relaxed:
+        st.warning("当前筛选组合没有匹配岗位，系统已自动放宽城市、岗位方向和学历限制，展示当前薪资范围下的整体就业市场，避免右侧页面空白。")
+
+    if no_keyword_match:
+        st.warning("当前关键词没有匹配岗位，系统已展示当前薪资范围下的整体市场作为参考。可以换成近义词，例如：医生可试试 医师、临床、医学、护理、药师。")
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 数据总览",
