@@ -1,0 +1,4 @@
+crawler/cookie.txt
+__pycache__/
+*.pyc
+.streamlit/
