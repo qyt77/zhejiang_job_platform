@@ -11,6 +11,7 @@ from wordcloud import WordCloud
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 
 
 # =========================================================
@@ -1056,6 +1057,89 @@ def style_fig(fig, height=460, showlegend=True):
     )
     return fig
 
+
+
+# =========================================================
+# 浙江省城市空间分布图
+# =========================================================
+ZHEJIANG_CITY_COORDS = {
+    "杭州": (30.2741, 120.1551),
+    "宁波": (29.8683, 121.5440),
+    "温州": (27.9938, 120.6994),
+    "嘉兴": (30.7461, 120.7555),
+    "湖州": (30.8943, 120.0868),
+    "绍兴": (30.0303, 120.5802),
+    "金华": (29.0791, 119.6474),
+    "衢州": (28.9701, 118.8593),
+    "舟山": (30.0160, 122.1069),
+    "台州": (28.6564, 121.4208),
+    "丽水": (28.4676, 119.9229),
+}
+
+
+def build_city_geo_df(df):
+    """按城市聚合岗位数量、企业数量和平均薪资，并补充经纬度。"""
+    if df.empty or "city" not in df.columns:
+        return pd.DataFrame(columns=["城市", "岗位数量", "覆盖企业", "平均薪资", "lat", "lon"])
+
+    city_geo = (
+        df.groupby("city")
+        .agg(
+            岗位数量=("job_name", "count"),
+            覆盖企业=("company_name", "nunique"),
+            平均薪资=("salary_avg", "mean")
+        )
+        .reset_index()
+        .rename(columns={"city": "城市"})
+    )
+
+    city_geo["城市"] = city_geo["城市"].astype(str).str.replace("市", "", regex=False).str.strip()
+    city_geo["lat"] = city_geo["城市"].map(lambda x: ZHEJIANG_CITY_COORDS.get(x, (None, None))[0])
+    city_geo["lon"] = city_geo["城市"].map(lambda x: ZHEJIANG_CITY_COORDS.get(x, (None, None))[1])
+    city_geo = city_geo.dropna(subset=["lat", "lon"]).copy()
+    city_geo["平均薪资"] = city_geo["平均薪资"].round(0)
+    city_geo = city_geo.sort_values("岗位数量", ascending=False)
+    return city_geo
+
+
+def draw_city_map(df):
+    """浙江省就业岗位空间分布图：气泡大小代表岗位数量，颜色代表平均薪资。"""
+    city_geo = build_city_geo_df(df)
+    if city_geo.empty:
+        return None
+
+    fig = px.scatter_mapbox(
+        city_geo,
+        lat="lat",
+        lon="lon",
+        size="岗位数量",
+        color="平均薪资",
+        hover_name="城市",
+        hover_data={
+            "岗位数量": True,
+            "覆盖企业": True,
+            "平均薪资": ":,.0f",
+            "lat": False,
+            "lon": False,
+        },
+        size_max=48,
+        zoom=6.25,
+        center={"lat": 29.4, "lon": 120.55},
+        mapbox_style="open-street-map",
+        color_continuous_scale=COLOR_SCALE_BLUE,
+    )
+    fig.update_traces(marker=dict(opacity=0.78))
+    fig.update_layout(
+        height=560,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="rgba(255,255,255,0)",
+        coloraxis_colorbar=dict(title="平均薪资"),
+        font=dict(size=12, color="#334155"),
+    )
+    return fig
+
+
 # =========================================================
 # 技能处理
 # =========================================================
@@ -1080,39 +1164,97 @@ def get_skill_frequency(df):
     return skill_df
 
 
-def make_wordcloud(skill_freq):
+def make_skill_matrix(skill_freq, top_n=36):
+    """
+    技能关键词矩阵图：替代传统词云。
+    优点：不依赖中文字体文件，不会出现方框；同时比气泡云更紧凑，适合报告截图。
+    """
     if skill_freq.empty:
         return None
 
-    word_freq = dict(zip(skill_freq["技能关键词"], skill_freq["出现次数"]))
+    top = skill_freq.head(top_n).copy().reset_index(drop=True)
+    cols = 6
+    rows = int(np.ceil(len(top) / cols))
 
-    font_candidates = [
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc"
-    ]
-    font_path = None
-    for p in font_candidates:
-        if os.path.exists(p):
-            font_path = p
-            break
+    labels = np.full((rows, cols), "", dtype=object)
+    values = np.full((rows, cols), np.nan, dtype=float)
 
-    wc = WordCloud(
-        font_path=font_path,
-        background_color="white",
-        width=1200,
-        height=560,
-        max_words=120,
-        collocations=False,
-        prefer_horizontal=0.88
-    ).generate_from_frequencies(word_freq)
+    for i, row in top.iterrows():
+        r = i // cols
+        c = i % cols
+        labels[r, c] = f"{row['技能关键词']}<br>{int(row['出现次数'])}"
+        values[r, c] = row["出现次数"]
 
-    fig, ax = plt.subplots(figsize=(12, 5.6))
-    ax.imshow(wc, interpolation="bilinear")
-    ax.axis("off")
+    fig = px.imshow(
+        values,
+        text_auto=False,
+        color_continuous_scale=COLOR_SCALE_BLUE,
+        aspect="auto",
+    )
+    fig.update_traces(
+        text=labels,
+        texttemplate="%{text}",
+        hovertemplate="技能关键词：%{text}<extra></extra>",
+        textfont=dict(size=16, color="#0f172a", family="Microsoft YaHei, SimHei, Arial")
+    )
+    fig.update_layout(
+        height=480,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        coloraxis_showscale=False,
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="rgba(255,255,255,0)",
+    )
     return fig
 
 
+def skill_to_category(skill):
+    s = str(skill).lower()
+    if any(k.lower() in s for k in ["python", "java", "数据", "excel", "sql", "开发", "算法", "分析"]):
+        return "技术/数据能力"
+    if any(k in str(skill) for k in ["机械", "设计", "cad", "工程", "制造", "plc", "自动化", "电气"]):
+        return "制造/工程能力"
+    if any(k in str(skill) for k in ["销售", "市场", "商务", "客户", "客服"]):
+        return "销售/服务能力"
+    if any(k in str(skill) for k in ["运营", "新媒体", "直播", "电商", "短视频", "剪辑", "内容"]):
+        return "运营/传播能力"
+    if any(k in str(skill) for k in ["教师", "教学", "教育", "培训", "课程"]):
+        return "教育/培训能力"
+    if any(k in str(skill) for k in ["英语", "外贸", "跨境", "外语"]):
+        return "外贸/语言能力"
+    if any(k in str(skill) for k in ["财务", "会计", "审计", "行政", "人力"]):
+        return "职能管理能力"
+    return "通用综合能力"
+
+
+def make_skill_category_chart(skill_freq):
+    """把零散技能词汇归并为能力类别，形成更有分析价值的能力结构图。"""
+    if skill_freq.empty:
+        return None
+
+    cat_df = skill_freq.copy()
+    cat_df["能力类别"] = cat_df["技能关键词"].apply(skill_to_category)
+    cat_sum = cat_df.groupby("能力类别", as_index=False)["出现次数"].sum().sort_values("出现次数", ascending=True)
+
+    fig = px.bar(
+        cat_sum,
+        x="出现次数",
+        y="能力类别",
+        orientation="h",
+        text="出现次数",
+        color="出现次数",
+        color_continuous_scale=COLOR_SCALE_TEAL,
+        template="simple_white"
+    )
+    fig.update_traces(textposition="outside", marker_line_width=0)
+    fig.update_layout(coloraxis_showscale=False)
+    return style_fig(fig, 480, showlegend=False)
+
+
+# =========================================================
+# 聚类处理
+# =========================================================
 # =========================================================
 # 聚类处理
 # =========================================================
@@ -1124,15 +1266,27 @@ def build_cluster_data(df):
     )
 
     cluster_df["degree_level"] = pd.to_numeric(cluster_df["degree_level"], errors="coerce").fillna(0)
+    cluster_df["salary_avg"] = pd.to_numeric(cluster_df["salary_avg"], errors="coerce").fillna(0)
+    cluster_df["salary_min"] = pd.to_numeric(cluster_df.get("salary_min", 0), errors="coerce").fillna(cluster_df["salary_avg"])
+    cluster_df["salary_max"] = pd.to_numeric(cluster_df.get("salary_max", 0), errors="coerce").fillna(cluster_df["salary_avg"])
+    cluster_df["salary_range"] = (cluster_df["salary_max"] - cluster_df["salary_min"]).clip(lower=0)
     cluster_df["is_high_salary"] = (cluster_df["salary_avg"] >= 12000).astype(int)
 
+    # 方向、城市、企业性质都纳入聚类，让岗位画像更丰富，不再只按学历和薪资挤在几条竖线上
     direction_dummies = pd.get_dummies(cluster_df["job_direction"], prefix="方向")
+    city_dummies = pd.get_dummies(cluster_df["city"], prefix="城市")
+    property_dummies = pd.get_dummies(cluster_df["company_property"], prefix="企业")
+
+    # 城市和企业性质类别较多，保留出现较多的列，避免特征过散
+    city_dummies = city_dummies.loc[:, city_dummies.sum().sort_values(ascending=False).head(8).index]
+    property_dummies = property_dummies.loc[:, property_dummies.sum().sort_values(ascending=False).head(6).index]
+
+    numeric_features = cluster_df[
+        ["salary_avg", "salary_min", "salary_max", "salary_range", "degree_level", "skill_count", "is_high_salary"]
+    ].fillna(0)
 
     features = pd.concat(
-        [
-            cluster_df[["salary_avg", "degree_level", "skill_count", "is_high_salary"]].fillna(0),
-            direction_dummies
-        ],
+        [numeric_features, direction_dummies, city_dummies, property_dummies],
         axis=1
     )
 
@@ -1144,6 +1298,8 @@ def run_kmeans(df, n_clusters=4):
 
     if len(cluster_df) < n_clusters:
         cluster_df["cluster"] = 0
+        cluster_df["聚类横轴"] = 0
+        cluster_df["聚类纵轴"] = 0
         return cluster_df, None
 
     scaler = StandardScaler()
@@ -1151,6 +1307,16 @@ def run_kmeans(df, n_clusters=4):
 
     model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_df["cluster"] = model.fit_predict(x_scaled)
+
+    # 使用 PCA 将多维岗位特征压缩到二维，用于绘制更丰富的聚类散点图
+    if x_scaled.shape[1] >= 2:
+        pca = PCA(n_components=2, random_state=42)
+        coords = pca.fit_transform(x_scaled)
+        cluster_df["聚类横轴"] = coords[:, 0]
+        cluster_df["聚类纵轴"] = coords[:, 1]
+    else:
+        cluster_df["聚类横轴"] = cluster_df["salary_avg"]
+        cluster_df["聚类纵轴"] = cluster_df["skill_count"]
 
     return cluster_df, model
 
@@ -1174,6 +1340,34 @@ def get_cluster_name(row):
         return "学历门槛提升型岗位"
 
     return "综合基础就业型岗位"
+
+
+def make_cluster_display_names(cluster_summary):
+    """
+    给每个聚类生成唯一的岗位画像名称。
+    之前多个 cluster 会被命名成同一个“制造工程技能型岗位”，图例只剩 3 类，视觉上不丰富。
+    这里保留业务含义，同时加上主要城市/方向/序号，保证每个聚类都能单独展示。
+    """
+    names = []
+    used = set()
+    for _, row in cluster_summary.iterrows():
+        base = get_cluster_name(row)
+        city = str(row.get("主要城市", "")).strip()
+        direction = str(row.get("主要岗位方向", "")).strip()
+        cluster_no = int(row.get("cluster", 0)) + 1
+
+        if city and direction:
+            name = f"画像{cluster_no}｜{city}·{direction}"
+        elif direction:
+            name = f"画像{cluster_no}｜{direction}"
+        else:
+            name = f"画像{cluster_no}｜{base}"
+
+        if name in used:
+            name = f"画像{cluster_no}｜{base}"
+        used.add(name)
+        names.append(name)
+    return names
 
 
 # =========================================================
@@ -1822,10 +2016,24 @@ def main():
                 f"共出现 <b>{top_skill_count}</b> 次。技能关键词能够反映就业市场对具体能力的需求方向。"
             )
 
-            chart_title("技能关键词词云")
-            wc_fig = make_wordcloud(skill_freq)
-            if wc_fig is not None:
-                st.pyplot(wc_fig, use_container_width=True)
+            left_cloud, right_cloud = st.columns([1.05, 0.95])
+
+            with left_cloud:
+                chart_title("技能关键词矩阵图")
+                matrix_fig = make_skill_matrix(skill_freq)
+                if matrix_fig is not None:
+                    st.plotly_chart(matrix_fig, use_container_width=True)
+
+            with right_cloud:
+                chart_title("岗位能力类别结构")
+                category_fig = make_skill_category_chart(skill_freq)
+                if category_fig is not None:
+                    st.plotly_chart(category_fig, use_container_width=True)
+
+            insight_box(
+                "技能分析不再使用传统词云，改用关键词矩阵和能力类别结构图，避免中文字体缺失导致方框问题，"
+                "同时能更清楚地展示市场到底需要哪几类能力。"
+            )
 
     # =====================================================
     # Tab4 城市岗位
@@ -1867,19 +2075,38 @@ def main():
                 f"共有 <b>{max_value}</b> 条岗位。该结果可以帮助学生识别不同城市的优势就业方向。"
             )
 
+            st.markdown('<div class="subtle-divider"></div>', unsafe_allow_html=True)
+            chart_title("浙江就业空间分布图")
+            fig_city_map = draw_city_map(filtered_df)
+            city_geo_df = build_city_geo_df(filtered_df)
+
+            if fig_city_map is None or city_geo_df.empty:
+                st.info("当前筛选条件下没有可用于地图展示的城市坐标数据。")
+            else:
+                st.plotly_chart(fig_city_map, use_container_width=True)
+                top_geo_city = city_geo_df.iloc[0]["城市"]
+                top_geo_count = int(city_geo_df.iloc[0]["岗位数量"])
+                top_salary_row = city_geo_df.sort_values("平均薪资", ascending=False).iloc[0]
+                insight_box(
+                    f"从空间分布看，当前岗位数量最多的城市是 <b>{top_geo_city}</b>，"
+                    f"共 <b>{top_geo_count}</b> 条岗位；平均薪资表现较高的城市是 "
+                    f"<b>{top_salary_row['城市']}</b>，约 <b>{top_salary_row['平均薪资']:,.0f}</b> 元/月。"
+                    f"地图气泡大小表示岗位数量，颜色深浅表示平均薪资，可直观看出浙江就业机会的城市集聚与扩散格局。"
+                )
+
     # =====================================================
     # Tab5 岗位聚类
     # =====================================================
     with tab5:
         section_intro(
-            "本页基于平均薪资、学历等级、技能数量、高薪标记和岗位方向等特征，使用 K-Means 对岗位进行聚类，形成不同类型的岗位画像。"
+            "本页基于薪资、学历、技能数量、岗位方向、城市和企业性质等多维特征，对岗位进行 K-Means 聚类，形成可解释的岗位画像。"
         )
 
         cluster_k = st.slider(
             "选择聚类数量 K",
-            min_value=3,
-            max_value=6,
-            value=4,
+            min_value=4,
+            max_value=8,
+            value=6,
             step=1
         )
 
@@ -1891,84 +2118,177 @@ def main():
             cluster_summary = cluster_df.groupby("cluster").agg(
                 岗位数量=("job_name", "count"),
                 平均薪资=("salary_avg", "mean"),
+                薪资中位数=("salary_avg", "median"),
                 高薪岗位占比=("is_high_salary", "mean"),
                 平均技能数=("skill_count", "mean"),
+                主要城市=("city", lambda x: x.value_counts().idxmax()),
                 主要岗位方向=("job_direction", lambda x: x.value_counts().idxmax()),
                 主要学历要求=("degree_clean", lambda x: x.value_counts().idxmax())
             ).reset_index()
 
             cluster_summary["高薪岗位占比"] = cluster_summary["高薪岗位占比"] * 100
-            cluster_summary["岗位画像名称"] = cluster_summary.apply(get_cluster_name, axis=1)
+            cluster_summary["岗位画像名称"] = make_cluster_display_names(cluster_summary)
+
+            name_map = dict(zip(cluster_summary["cluster"], cluster_summary["岗位画像名称"]))
+            cluster_df["岗位画像名称"] = cluster_df["cluster"].map(name_map)
 
             st.dataframe(
                 cluster_summary[
                     [
-                        "cluster", "岗位画像名称", "岗位数量", "平均薪资",
-                        "高薪岗位占比", "平均技能数", "主要岗位方向", "主要学历要求"
+                        "cluster", "岗位画像名称", "岗位数量", "平均薪资", "薪资中位数",
+                        "高薪岗位占比", "平均技能数", "主要城市", "主要岗位方向", "主要学历要求"
                     ]
                 ],
                 use_container_width=True
             )
 
-            chart_title("岗位画像气泡图：数量 × 薪资 × 技能复杂度")
-
-            # 使用聚类汇总结果画气泡图，避免原来大量点堆叠在学历等级上，视觉更清楚。
-            fig_cluster = px.scatter(
-                cluster_summary,
-                x="平均薪资",
-                y="平均技能数",
-                size="岗位数量",
+            chart_title("岗位聚类散点图：多维特征降维展示")
+            fig_cluster_points = px.scatter(
+                cluster_df,
+                x="聚类横轴",
+                y="聚类纵轴",
                 color="岗位画像名称",
-                text="岗位画像名称",
+                size="salary_avg",
                 hover_data={
-                    "岗位画像名称": True,
-                    "岗位数量": True,
-                    "平均薪资": ":,.0f",
-                    "高薪岗位占比": ":.1f",
-                    "平均技能数": ":.2f",
-                    "主要岗位方向": True,
-                    "主要学历要求": True,
+                    "job_name": True,
+                    "company_name": True,
+                    "city": True,
+                    "salary_avg": ":,.0f",
+                    "degree_clean": True,
+                    "job_direction": True,
+                    "skill_keywords": True,
+                    "聚类横轴": False,
+                    "聚类纵轴": False,
                 },
-                template="simple_white",
-                size_max=72,
-                color_discrete_sequence=["#2563eb", "#38bdf8", "#f97316", "#8b5cf6", "#14b8a6", "#ef4444"],
+                size_max=26,
+                opacity=0.72,
+                color_discrete_sequence=["#2563eb", "#38bdf8", "#f97316", "#8b5cf6", "#14b8a6", "#ef4444", "#0f766e"],
                 labels={
-                    "平均薪资": "平均薪资（元/月）",
-                    "平均技能数": "平均技能数",
-                    "岗位画像名称": "岗位画像"
-                }
+                    "岗位画像名称": "岗位画像",
+                    "聚类横轴": "岗位综合特征轴 1",
+                    "聚类纵轴": "岗位综合特征轴 2",
+                    "salary_avg": "平均薪资"
+                },
+                template="simple_white"
             )
-            fig_cluster.update_traces(
-                textposition="top center",
-                marker=dict(opacity=0.82, line=dict(width=1.2, color="white"))
-            )
-            st.plotly_chart(style_fig(fig_cluster, 520), use_container_width=True)
+            fig_cluster_points.update_traces(marker=dict(line=dict(width=0.7, color="white")))
+            st.plotly_chart(style_fig(fig_cluster_points, 560), use_container_width=True)
 
-            chart_title("不同岗位画像的岗位数量对比")
-            fig_cluster_bar = px.bar(
-                cluster_summary.sort_values("岗位数量", ascending=True),
-                x="岗位数量",
-                y="岗位画像名称",
-                orientation="h",
-                text="岗位数量",
-                color="平均薪资",
-                color_continuous_scale=COLOR_SCALE_BLUE,
-                template="simple_white",
-                labels={"岗位画像名称": "岗位画像", "岗位数量": "岗位数量", "平均薪资": "平均薪资"}
+            left_cluster, right_cluster = st.columns([1.05, 0.95])
+
+            with left_cluster:
+                chart_title("岗位画像气泡图：数量 × 薪资 × 技能复杂度")
+                fig_cluster = px.scatter(
+                    cluster_summary,
+                    x="平均薪资",
+                    y="平均技能数",
+                    size="岗位数量",
+                    color="岗位画像名称",
+                    text="岗位画像名称",
+                    hover_data={
+                        "岗位画像名称": True,
+                        "岗位数量": True,
+                        "平均薪资": ":,.0f",
+                        "薪资中位数": ":,.0f",
+                        "高薪岗位占比": ":.1f",
+                        "平均技能数": ":.2f",
+                        "主要城市": True,
+                        "主要岗位方向": True,
+                        "主要学历要求": True,
+                    },
+                    template="simple_white",
+                    size_max=78,
+                    color_discrete_sequence=["#2563eb", "#38bdf8", "#f97316", "#8b5cf6", "#14b8a6", "#ef4444", "#0f766e"],
+                    labels={
+                        "平均薪资": "平均薪资（元/月）",
+                        "平均技能数": "平均技能数",
+                        "岗位画像名称": "岗位画像"
+                    }
+                )
+                fig_cluster.update_traces(
+                    textposition="top center",
+                    marker=dict(opacity=0.82, line=dict(width=1.2, color="white"))
+                )
+                st.plotly_chart(style_fig(fig_cluster, 500), use_container_width=True)
+
+            with right_cluster:
+                chart_title("岗位画像数量结构")
+                fig_cluster_bar = px.bar(
+                    cluster_summary.sort_values("岗位数量", ascending=True),
+                    x="岗位数量",
+                    y="岗位画像名称",
+                    orientation="h",
+                    text="岗位数量",
+                    color="平均薪资",
+                    color_continuous_scale=COLOR_SCALE_BLUE,
+                    template="simple_white",
+                    labels={"岗位画像名称": "岗位画像", "岗位数量": "岗位数量", "平均薪资": "平均薪资"}
+                )
+                fig_cluster_bar.update_traces(textposition="outside", marker_line_width=0)
+                fig_cluster_bar.update_layout(coloraxis_colorbar=dict(title="平均薪资"))
+                st.plotly_chart(style_fig(fig_cluster_bar, 500, showlegend=False), use_container_width=True)
+
+            st.markdown('<div class="subtle-divider"></div>', unsafe_allow_html=True)
+            left_more, right_more = st.columns([1.08, 0.92])
+
+            with left_more:
+                chart_title("岗位画像 × 城市分布")
+                top_cities_for_cluster = cluster_df["city"].value_counts().head(8).index.tolist()
+                cluster_city_df = cluster_df[cluster_df["city"].isin(top_cities_for_cluster)].copy()
+                cluster_city = (
+                    cluster_city_df.groupby(["岗位画像名称", "city"])
+                    .size()
+                    .reset_index(name="岗位数量")
+                )
+                fig_cluster_city = px.bar(
+                    cluster_city,
+                    x="岗位数量",
+                    y="岗位画像名称",
+                    color="city",
+                    orientation="h",
+                    text="岗位数量",
+                    template="simple_white",
+                    labels={"city": "城市", "岗位画像名称": "岗位画像"},
+                    color_discrete_sequence=["#2563eb", "#38bdf8", "#14b8a6", "#8b5cf6", "#f97316", "#ef4444", "#0f766e", "#64748b"]
+                )
+                fig_cluster_city.update_traces(textposition="inside", marker_line_width=0)
+                st.plotly_chart(style_fig(fig_cluster_city, 520), use_container_width=True)
+
+            with right_more:
+                chart_title("岗位画像 × 学历要求热力图")
+                cluster_degree = pd.crosstab(cluster_df["岗位画像名称"], cluster_df["degree_clean"])
+                fig_cluster_degree = px.imshow(
+                    cluster_degree,
+                    text_auto=True,
+                    color_continuous_scale=COLOR_SCALE_PURPLE,
+                    aspect="auto",
+                    labels=dict(x="学历要求", y="岗位画像", color="岗位数量")
+                )
+                fig_cluster_degree.update_layout(
+                    height=520,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    paper_bgcolor="rgba(255,255,255,0)",
+                    plot_bgcolor="rgba(255,255,255,0)",
+                    font=dict(size=12, color="#334155"),
+                )
+                st.plotly_chart(fig_cluster_degree, use_container_width=True)
+
+            insight_box(
+                "岗位画像已按聚类序号、主要城市和主要方向生成唯一名称，因此图例会展示完整的多个岗位群体；"
+                "城市分布和学历热力图可以进一步说明不同岗位画像在空间和门槛上的差异。"
             )
-            fig_cluster_bar.update_traces(textposition="outside", marker_line_width=0)
-            fig_cluster_bar.update_layout(coloraxis_colorbar=dict(title="平均薪资"))
-            st.plotly_chart(style_fig(fig_cluster_bar, 420, showlegend=False), use_container_width=True)
 
             largest_cluster = cluster_summary.sort_values("岗位数量", ascending=False).iloc[0]
             salary_cluster = cluster_summary.sort_values("平均薪资", ascending=False).iloc[0]
 
             insight_box(
                 f"岗位数量最多的聚类画像是 <b>{largest_cluster['岗位画像名称']}</b>，"
-                f"共有 <b>{largest_cluster['岗位数量']}</b> 条岗位，主要方向为 <b>{largest_cluster['主要岗位方向']}</b>；"
+                f"共有 <b>{largest_cluster['岗位数量']}</b> 条岗位，主要集中在 <b>{largest_cluster['主要城市']}</b>，"
+                f"主要方向为 <b>{largest_cluster['主要岗位方向']}</b>；"
                 f"薪资最高的岗位画像是 <b>{salary_cluster['岗位画像名称']}</b>，"
                 f"平均薪资约为 <b>{salary_cluster['平均薪资']:,.0f}</b> 元/月。"
             )
+
 
     # =====================================================
     # Tab6 求职匹配
